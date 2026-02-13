@@ -9,6 +9,7 @@
 volumes/
 data/
 backups/
+.pocketbase/
 .nginx/
 !.nginx/
 .nginx/*

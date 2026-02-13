@@ -61,6 +61,22 @@ services:
         sh /opt/common/setup-resolver.sh
         exec node /opt/pull-data.js
 
+  pocketbase:
+    image: ghcr.io/muchobien/pocketbase:latest
+    depends_on:
+      pull-data:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    environment:
+      - PB_HOST=0.0.0.0
+      - PB_PORT=${MAIN_PORT:-3000}
+      - PB_ADMIN_EMAIL=${PB_ADMIN_EMAIL:-}
+      - PB_ADMIN_PASSWORD=${PB_ADMIN_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${MAIN_PORT:-3000}:${MAIN_PORT:-3000}"
+    volumes:
+      - ./.pocketbase:/pb_data
+
   nginx:
     image: nginx:1.27-alpine
     depends_on:
@@ -206,4 +222,3 @@ volumes:
     driver: local
   caddy-config:
     driver: local
-

@@ -1,4 +1,4 @@
-name: deploy-template
+name: tranhvo415-a11y-svr-pocketbase
 on:
   push:
     branches:
@@ -40,7 +40,7 @@ permissions:
   actions: write
 
 jobs:
-  deploy-template:
+  tranhvo415-a11y-svr-pocketbase:
     runs-on: ubuntu-latest #windows-latest, macos-latest, self-hosted, linux, x64
     timeout-minutes: 60 # Increase for long deployments
     env:
@@ -91,28 +91,6 @@ jobs:
           source "$HOME/.bash/.bash_aliase"
           r_help
 
-      - name: prepare-pull-data-test
-        run: |
-          if grep -q '^PULL_DATA_SYNC_DIRS=' .env; then
-            sed -i 's/^PULL_DATA_SYNC_DIRS=.*/PULL_DATA_SYNC_DIRS=.pocketbase,yml/' .env
-          else
-            echo 'PULL_DATA_SYNC_DIRS=.pocketbase,yml' >> .env
-          fi
-
-          mkdir -p .pocketbase yml
-          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          file_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          runner_tag="$(printf '%s' "${RUNNER_NAME:-unknown-runner}-$GITHUB_RUN_ID" | tr -c '[:alnum:]._-' '-')"
-          pb_file=".pocketbase/pull-data-test-${file_stamp}-${runner_tag}.txt"
-          yml_file="yml/pull-data-test-${file_stamp}-${runner_tag}.yml"
-
-          printf 'created_at=%s\nrun_id=%s\nrunner_name=%s\n' "$created_at" "$GITHUB_RUN_ID" "${RUNNER_NAME:-unknown-runner}" > "$pb_file"
-          printf 'kind: pull-data-test\ncreatedAt: %s\nrunId: "%s"\nrunnerName: "%s"\n' "$created_at" "$GITHUB_RUN_ID" "${RUNNER_NAME:-unknown-runner}" > "$yml_file"
-
-          echo "PULL_DATA_SYNC_DIRS=$(grep '^PULL_DATA_SYNC_DIRS=' .env | cut -d= -f2-)"
-          echo "created files:"
-          ls -la "$pb_file" "$yml_file"
-
       - name: runner-add-ssh
         run: |
           dotenvrtdb -e .env -- runner-add-ssh
@@ -139,4 +117,3 @@ jobs:
         run: |
           docker compose --env-file .env down -v
           # docker compose --env-file .env down
-
