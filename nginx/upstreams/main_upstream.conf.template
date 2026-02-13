@@ -1,0 +1,4 @@
+upstream main_upstream {
+  zone main_upstream 64k;
+  server ${MAIN_TARGET_DNS}:${MAIN_TARGET_PORT};
+}

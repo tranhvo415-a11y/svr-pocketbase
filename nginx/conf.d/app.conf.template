@@ -1,0 +1,155 @@
+include /etc/nginx/upstreams/main_upstream.conf;
+include /etc/nginx/upstreams/shadow_upstream.conf;
+include /etc/nginx/maps/mirror_rules.map;
+
+map $http_x_forwarded_proto $proxy_forwarded_proto {
+  default $http_x_forwarded_proto;
+  ""      $scheme;
+}
+
+map $http_x_mirror_id $mirror_id {
+  default $http_x_mirror_id;
+  ""      "$msec-$connection-$connection_requests";
+}
+
+log_format shadow_mirror
+  't=$time_iso8601 mirror_id=$mirror_id '
+  'client=$remote_addr host=$host method=$request_method uri="$uri" '
+  'status=$status rt=$request_time '
+  'upstream_addr="$upstream_addr" upstream_status="$upstream_status" '
+  'urt="$upstream_response_time" '
+  'x_shadow="$http_x_shadow"';
+
+server {
+  listen ${NGINX_PORT};
+  listen [::]:${NGINX_PORT};
+  resolver ${TAILSCALE_DNS_NAMESERVER_PRIMARY} ${TAILSCALE_DNS_NAMESERVER_FALLBACK} valid=10s ipv6=off;
+  resolver_timeout 2s;
+  log_subrequest on;
+
+  access_log /var/log/nginx/app.access.log;
+  error_log  /var/log/nginx/app.error.log warn;
+
+  location = /files {
+    return 301 /files/;
+  }
+
+  location ^~ /files/ {
+    auth_basic "Protected Files";
+    auth_basic_user_file /etc/nginx/auth/.htpasswd;
+    autoindex on;
+    autoindex_exact_size off;
+    autoindex_localtime on;
+    alias ${HOST_CWD}/;
+
+    default_type text/plain;
+
+    add_header Content-Disposition inline;
+    types {
+      text/plain txt log md env;
+      text/html html htm;
+      text/css css;
+      text/javascript js;
+      application/json json;
+      application/pdf pdf;
+      image/jpeg jpg jpeg;
+      image/png png;
+      image/gif gif;
+      image/svg+xml svg;
+      video/mp4 mp4;
+      video/webm webm;
+      audio/mpeg mp3;
+      audio/wav wav;
+    }
+  }
+
+  location = /cwd {
+    default_type application/json;
+    return 200 '{"cwd":"${HOST_CWD}","startTime":"${RUNNER_START_TIME}"}';
+  }
+
+  location = /healthz {
+    default_type application/json;
+    return 200 '{"status":"ok"}';
+  }
+
+  location ^~ /dockerapi/ {
+    auth_basic "Protected Docker API";
+    auth_basic_user_file /etc/nginx/auth/.htpasswd;
+
+    proxy_pass http://127.0.0.1:${DOCKER_MANAGER_PORT};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $proxy_forwarded_proto;
+    proxy_set_header Connection "";
+
+    proxy_connect_timeout 1s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_next_upstream off;
+  }
+
+  location ^~ /api/ {
+    proxy_pass http://main_upstream;
+
+    mirror /__shadow;
+    mirror_request_body on;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $proxy_forwarded_proto;
+    proxy_set_header Connection "";
+
+    proxy_connect_timeout 1s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_next_upstream off;
+  }
+
+  location / {
+    proxy_pass http://main_upstream;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $proxy_forwarded_proto;
+    proxy_set_header Connection "";
+
+    proxy_connect_timeout 1s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_next_upstream off;
+  }
+
+  location = /__shadow {
+    internal;
+
+    if ($do_mirror = 0) {
+      return 204;
+    }
+
+    proxy_set_header X-Shadow 1;
+    proxy_set_header X-Mirror-Id $mirror_id;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $proxy_forwarded_proto;
+    proxy_set_header Connection "";
+
+    access_log /var/log/nginx/shadow.mirror.log shadow_mirror;
+
+    proxy_connect_timeout 200ms;
+    proxy_send_timeout    1s;
+    proxy_read_timeout    1s;
+
+    proxy_pass http://shadow_upstream$request_uri;
+  }
+
+  location ^~ /__shadow {
+    return 404;
+  }
+}

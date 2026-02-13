@@ -1,0 +1,49 @@
+# Secrets and runtime env
+.env
+.env/
+.env.*
+.env-*
+!.env.example
+
+# Docker/runtime data
+volumes/
+data/
+backups/
+.nginx/
+!.nginx/
+.nginx/*
+!.nginx/runtime/
+.nginx/runtime/*
+!.nginx/runtime/shadow-servers/
+.nginx/runtime/shadow-servers/*
+!.nginx/runtime/shadow-servers/.gitkeep
+.caddy/
+.docker-manager/*
+!.docker-manager/.gitkeep
+
+# Archives / backups
+*.tar.gz
+*.zip
+*.bak
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp files
+tmp/
+temp/
+*.tmp
+.npm-cache/

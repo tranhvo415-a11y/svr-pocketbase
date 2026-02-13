@@ -1,0 +1,68 @@
+# 🔒 CRITICAL: Prevent environment files from being published to npm
+.publishrc.json
+.npm-multi-publish-tmp
+push-env-dotenvrtdb.cmd
+
+# Environment files - ALL patterns
+.env
+.env.*
+*.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+.env.staging
+
+# Temp env files (various patterns)
+.env.temp.*
+.env.tmp.*
+*.env.temp
+*.env.tmp
+temp.env
+tmp.env
+
+# Development files
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.DS_Store
+
+# Test files
+test/
+tests/
+*.test.js
+*.spec.js
+coverage/
+.nyc_output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+circle.yml
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Build artifacts
+dist/
+build/
+*.tgz

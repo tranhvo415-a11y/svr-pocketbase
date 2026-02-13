@@ -1,0 +1,142 @@
+name: deploy-template
+on:
+  push:
+    branches:
+      - main
+    # tags:
+    #   - "v*"
+    # paths:
+    #   - "src/**"
+    #   - "docker-compose.yml"
+    # paths-ignore:
+    #   - "docs/**"
+    #   - "**/*.md"
+  pull_request:
+    branches:
+      - main
+    # types: [opened, synchronize, reopened, ready_for_review]
+    # paths:
+    #   - "src/**"
+    # paths-ignore:
+    #   - "docs/**"
+  workflow_dispatch:
+    # inputs:
+    #   environment:
+    #     description: "Target environment"
+    #     required: true
+    #     default: "dev"
+  # schedule:
+  #   - cron: "0 2 * * *" # Daily at 02:00 UTC
+  # workflow_call:
+  #   inputs:
+  #     environment:
+  #       required: true
+  #       type: string
+
+permissions:
+  id-token: write # Required for OIDC to cloud providers
+  contents: write
+  packages: write
+  actions: write
+
+jobs:
+  deploy-template:
+    runs-on: ubuntu-latest #windows-latest, macos-latest, self-hosted, linux, x64
+    timeout-minutes: 60 # Increase for long deployments
+    env:
+      DOTENVRTDB_URL: ${{ secrets.DOTENVRTDB_URL }}
+    steps:
+      - name: clone-code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # path: app
+          # submodules: recursive
+
+      - name: setup-nodejs
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20" # Options: 18, 20, 22
+          # cache: "npm" # Options: npm, yarn, pnpm
+          # cache-dependency-path: "**/package-lock.json"
+
+      - name: npm-installed
+        run: |
+          if [ -f package.json ]; then
+            npm install
+          else
+            echo "No package.json found, skipping npm install"
+          fi
+          npm i -g @tltdh61/dotenvrtdb
+          npm i -g @hugginroonin/runner-add-ssh
+          # npm ci
+          # npm run build
+
+      - name: create-env-file
+        run: |
+          : > .env
+          dotenvrtdb -e .env --eUrl="$DOTENVRTDB_URL" --pull
+          dotenvrtdb -e .env --writefilebase64=./cloudflared-credentials.json --var=CLOUDFLARED_CREDENTIALS_JSON_BASE64
+          dotenvrtdb -e .env --writefilebase64=./cloudflared-config.yml --var=CLOUDFLARED_CONFIG_YML_BASE64
+          dotenvrtdb -e .env --writefilebase64=./docker-compose.yml --var=DOCKER_COMPOSE_YML_BASE64
+          # dotenvrtdb -e .env --writefileraw=./custom.json --var=CUSTOM_JSON
+
+      - name: setup-bash-aliase
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x ./.bash/setup-bash-aliase.sh
+          ./.bash/setup-bash-aliase.sh ./.env
+          source "$HOME/.bash/runner-alias.env"
+          source "$HOME/.bash/.bash_aliase"
+          r_help
+
+      - name: prepare-pull-data-test
+        run: |
+          if grep -q '^PULL_DATA_SYNC_DIRS=' .env; then
+            sed -i 's/^PULL_DATA_SYNC_DIRS=.*/PULL_DATA_SYNC_DIRS=.pocketbase,yml/' .env
+          else
+            echo 'PULL_DATA_SYNC_DIRS=.pocketbase,yml' >> .env
+          fi
+
+          mkdir -p .pocketbase yml
+          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          file_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          runner_tag="$(printf '%s' "${RUNNER_NAME:-unknown-runner}-$GITHUB_RUN_ID" | tr -c '[:alnum:]._-' '-')"
+          pb_file=".pocketbase/pull-data-test-${file_stamp}-${runner_tag}.txt"
+          yml_file="yml/pull-data-test-${file_stamp}-${runner_tag}.yml"
+
+          printf 'created_at=%s\nrun_id=%s\nrunner_name=%s\n' "$created_at" "$GITHUB_RUN_ID" "${RUNNER_NAME:-unknown-runner}" > "$pb_file"
+          printf 'kind: pull-data-test\ncreatedAt: %s\nrunId: "%s"\nrunnerName: "%s"\n' "$created_at" "$GITHUB_RUN_ID" "${RUNNER_NAME:-unknown-runner}" > "$yml_file"
+
+          echo "PULL_DATA_SYNC_DIRS=$(grep '^PULL_DATA_SYNC_DIRS=' .env | cut -d= -f2-)"
+          echo "created files:"
+          ls -la "$pb_file" "$yml_file"
+
+      - name: runner-add-ssh
+        run: |
+          dotenvrtdb -e .env -- runner-add-ssh
+
+      - name: setup-runner-prev
+        run: |
+          dotenvrtdb -e .env -- node ./scripts/setup-runner-prev.js
+
+      - name: docker-started
+        run: |
+          docker compose --env-file .env up -d
+          # docker compose --env-file .env -f docker-compose.prod.yml up -d
+
+      - name: setup-runner-after
+        run: |
+          dotenvrtdb -e .env -- node ./scripts/setup-runner-after.js
+
+      - name: runner-keep-alive
+        run: |
+          npx --yes @ongtrieuhau861457/runner-keep-alive --interval 60 --services docker
+
+      - name: docker-cleanup
+        if: always()
+        run: |
+          docker compose --env-file .env down -v
+          # docker compose --env-file .env down
+

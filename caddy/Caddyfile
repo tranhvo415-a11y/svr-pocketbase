@@ -1,0 +1,12 @@
+:80 {
+	reverse_proxy {$CADDY_UPSTREAM_HOST:127.0.0.1}:{$CADDY_UPSTREAM_PORT:8080} {
+		header_up Host {host}
+
+		transport http {
+			dial_timeout 1s
+			read_timeout 3600s
+			write_timeout 3600s
+			response_header_timeout 3600s
+		}
+	}
+}

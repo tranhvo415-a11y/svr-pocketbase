@@ -1,0 +1,6 @@
+upstream shadow_upstream {
+  zone shadow_upstream 64k;
+  least_conn;
+  server 127.0.0.1:65535 down;
+  include /etc/nginx/shadow-servers/*.conf;
+}

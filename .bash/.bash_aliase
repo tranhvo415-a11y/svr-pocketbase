@@ -1,0 +1,485 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+
+# Runner helper aliases/functions.
+# Works with both GitHub Actions and Azure Pipelines workspace layouts.
+
+_r_env_file() {
+  if [[ -n "${RUNNER_ALIAS_ENV_FILE:-}" && -f "${RUNNER_ALIAS_ENV_FILE}" ]]; then
+    printf '%s\n' "${RUNNER_ALIAS_ENV_FILE}"
+    return 0
+  fi
+
+  if [[ -f ".env" ]]; then
+    printf '%s\n' ".env"
+    return 0
+  fi
+
+  if [[ -f "runner-template/.env-runner-template/.env.runner-template" ]]; then
+    printf '%s\n' "runner-template/.env-runner-template/.env.runner-template"
+    return 0
+  fi
+
+  return 1
+}
+
+_r_read_env() {
+  local key="$1"
+  local env_file
+  local value
+
+  env_file="$(_r_env_file 2>/dev/null || true)"
+  if [[ -z "$env_file" || ! -f "$env_file" ]]; then
+    return 1
+  fi
+
+  value="$(sed -n "s/^${key}=//p" "$env_file" | tail -n 1 | tr -d '\r')"
+  if [[ -z "$value" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$value"
+}
+
+_r_get() {
+  local key="$1"
+  if [[ -n "${!key:-}" ]]; then
+    printf '%s\n' "${!key}"
+    return 0
+  fi
+  _r_read_env "$key"
+}
+
+_r_ssh_host() {
+  local value
+  for key in RUNNER_SSH_HOST CLOUDFLARED_TUNNEL_DOMAIN_01 TAILSCALE_SSH_HOST; do
+    value="$(_r_get "$key" 2>/dev/null || true)"
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_r_ssh_port() {
+  local value
+  value="$(_r_get RUNNER_SSH_PORT 2>/dev/null || true)"
+  if [[ -z "$value" ]]; then
+    value="$(_r_get SSH_PORT 2>/dev/null || true)"
+  fi
+  if [[ -z "$value" ]]; then
+    value="2222"
+  fi
+  printf '%s\n' "$value"
+}
+
+_r_ssh_user() {
+  local value
+  value="$(_r_get RUNNER_SSH_USER 2>/dev/null || true)"
+  if [[ -z "$value" ]]; then
+    value="runner"
+  fi
+  printf '%s\n' "$value"
+}
+
+_r_has_compose_file() {
+  local base="$1"
+  [[ -f "${base}/docker-compose.yml" || -f "${base}/docker-compose.yaml" || -f "${base}/compose.yml" || -f "${base}/compose.yaml" ]]
+}
+
+_r_emit_candidates() {
+  local d
+  local pattern
+
+  for d in "${HOST_CWD:-}" "${GITHUB_WORKSPACE:-}" "${BUILD_SOURCESDIRECTORY:-}" "${SYSTEM_DEFAULTWORKINGDIRECTORY:-}"; do
+    if [[ -n "$d" && -d "$d" ]]; then
+      printf '%s\n' "$d"
+    fi
+  done
+
+  for pattern in \
+    "$HOME/work/*/*" \
+    "$HOME/actions-runner/_work/*/*" \
+    "/home/runner/work/*/*" \
+    "/home/runner/actions-runner/_work/*/*" \
+    "/__w/*/*" \
+    "/home/vsts/work/*/s"
+  do
+    for d in $pattern; do
+      if [[ -d "$d" ]]; then
+        printf '%s\n' "$d"
+      fi
+    done
+  done
+}
+
+_r_resolve_cwd() {
+  local first_match=""
+  local d
+
+  while IFS= read -r d; do
+    if [[ -z "$first_match" ]]; then
+      first_match="$d"
+    fi
+    if _r_has_compose_file "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done < <(_r_emit_candidates)
+
+  if [[ -n "$first_match" ]]; then
+    printf '%s\n' "$first_match"
+    return 0
+  fi
+
+  pwd
+}
+
+_r_is_local_runner_shell() {
+  if [[ "${RUNNER_ALIAS_FORCE_SSH:-0}" == "1" ]]; then
+    return 1
+  fi
+
+  if [[ -d "$HOME/actions-runner" || -d "$HOME/work" || -d "/home/runner/work" || -d "/home/vsts/work" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+_r_exec_local_in_cwd() {
+  local cmd="$*"
+  local cwd
+  cwd="$(_r_resolve_cwd)"
+  (
+    cd "$cwd"
+    sh -lc "$cmd"
+  )
+}
+
+_r_ssh_raw() {
+  local host
+  local user
+  local port
+
+  host="$(_r_ssh_host 2>/dev/null || true)"
+  if [[ -z "$host" ]]; then
+    echo "r_ssh: missing host. Set RUNNER_SSH_HOST or CLOUDFLARED_TUNNEL_DOMAIN_01." >&2
+    return 1
+  fi
+
+  user="$(_r_ssh_user)"
+  port="$(_r_ssh_port)"
+
+  ssh \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -p "$port" \
+    "${user}@${host}" "$@"
+}
+
+_r_exec_in_cwd() {
+  local remote_cmd="$*"
+  if [[ -z "$remote_cmd" ]]; then
+    echo "r_exec_in_cwd: missing command" >&2
+    return 1
+  fi
+
+  if _r_is_local_runner_shell; then
+    _r_exec_local_in_cwd "$remote_cmd"
+    return $?
+  fi
+
+  _r_ssh_raw sh -s -- "$remote_cmd" <<'EOF'
+set -eu
+cmd="$1"
+
+has_compose_file() {
+  [ -f "$1/docker-compose.yml" ] || [ -f "$1/docker-compose.yaml" ] || [ -f "$1/compose.yml" ] || [ -f "$1/compose.yaml" ]
+}
+
+emit_candidates() {
+  for d in "${HOST_CWD:-}" "${GITHUB_WORKSPACE:-}" "${BUILD_SOURCESDIRECTORY:-}" "${SYSTEM_DEFAULTWORKINGDIRECTORY:-}"; do
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      printf '%s\n' "$d"
+    fi
+  done
+
+  for pattern in \
+    "$HOME/work/*/*" \
+    "$HOME/actions-runner/_work/*/*" \
+    "/home/runner/work/*/*" \
+    "/home/runner/actions-runner/_work/*/*" \
+    "/__w/*/*" \
+    "/home/vsts/work/*/s"
+  do
+    for d in $pattern; do
+      if [ -d "$d" ]; then
+        printf '%s\n' "$d"
+      fi
+    done
+  done
+}
+
+resolve_cwd() {
+  first_match=""
+  while IFS= read -r d; do
+    if [ -z "$first_match" ]; then
+      first_match="$d"
+    fi
+    if has_compose_file "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done <<EOF_CANDIDATES
+$(emit_candidates)
+EOF_CANDIDATES
+
+  if [ -n "$first_match" ]; then
+    printf '%s\n' "$first_match"
+    return 0
+  fi
+
+  pwd
+}
+
+cwd="$(resolve_cwd)"
+cd "$cwd"
+sh -lc "$cmd"
+EOF
+}
+
+r_ssh() {
+  local cwd
+  local cmd
+
+  if _r_is_local_runner_shell; then
+    if [[ $# -eq 0 ]]; then
+      cwd="$(_r_resolve_cwd)"
+      cd "$cwd"
+      echo "[r_ssh] local mode cwd: $cwd"
+      if command -v bash >/dev/null 2>&1; then
+        exec bash -l
+      fi
+      exec sh -l
+    fi
+
+    cmd="$(printf '%q ' "$@")"
+    cmd="${cmd% }"
+    _r_exec_local_in_cwd "$cmd"
+    return $?
+  fi
+
+  if [[ $# -eq 0 ]]; then
+    _r_ssh_raw sh -s <<'EOF'
+set -eu
+
+has_compose_file() {
+  [ -f "$1/docker-compose.yml" ] || [ -f "$1/docker-compose.yaml" ] || [ -f "$1/compose.yml" ] || [ -f "$1/compose.yaml" ]
+}
+
+emit_candidates() {
+  for d in "${HOST_CWD:-}" "${GITHUB_WORKSPACE:-}" "${BUILD_SOURCESDIRECTORY:-}" "${SYSTEM_DEFAULTWORKINGDIRECTORY:-}"; do
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      printf '%s\n' "$d"
+    fi
+  done
+
+  for pattern in \
+    "$HOME/work/*/*" \
+    "$HOME/actions-runner/_work/*/*" \
+    "/home/runner/work/*/*" \
+    "/home/runner/actions-runner/_work/*/*" \
+    "/__w/*/*" \
+    "/home/vsts/work/*/s"
+  do
+    for d in $pattern; do
+      if [ -d "$d" ]; then
+        printf '%s\n' "$d"
+      fi
+    done
+  done
+}
+
+resolve_cwd() {
+  first_match=""
+  while IFS= read -r d; do
+    if [ -z "$first_match" ]; then
+      first_match="$d"
+    fi
+    if has_compose_file "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done <<EOF_CANDIDATES
+$(emit_candidates)
+EOF_CANDIDATES
+
+  if [ -n "$first_match" ]; then
+    printf '%s\n' "$first_match"
+    return 0
+  fi
+
+  pwd
+}
+
+cwd="$(resolve_cwd)"
+cd "$cwd"
+echo "[r_ssh] cwd: $cwd"
+if command -v bash >/dev/null 2>&1; then
+  exec bash -l
+fi
+exec sh -l
+EOF
+    return $?
+  fi
+
+  cmd="$(printf '%q ' "$@")"
+  cmd="${cmd% }"
+  _r_exec_in_cwd "$cmd"
+}
+
+r_cd() {
+  local target="${1:-}"
+
+  if _r_is_local_runner_shell; then
+    local cwd
+    cwd="$(_r_resolve_cwd)"
+    cd "$cwd"
+    if [[ -n "$target" ]]; then
+      cd "$target"
+    fi
+    echo "[r_cd] local mode cwd: $(pwd)"
+    if command -v bash >/dev/null 2>&1; then
+      exec bash -l
+    fi
+    exec sh -l
+  fi
+
+  if [[ -z "$target" ]]; then
+    r_ssh
+    return $?
+  fi
+
+  _r_ssh_raw sh -s -- "$target" <<'EOF'
+set -eu
+target="$1"
+
+has_compose_file() {
+  [ -f "$1/docker-compose.yml" ] || [ -f "$1/docker-compose.yaml" ] || [ -f "$1/compose.yml" ] || [ -f "$1/compose.yaml" ]
+}
+
+emit_candidates() {
+  for d in "${HOST_CWD:-}" "${GITHUB_WORKSPACE:-}" "${BUILD_SOURCESDIRECTORY:-}" "${SYSTEM_DEFAULTWORKINGDIRECTORY:-}"; do
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      printf '%s\n' "$d"
+    fi
+  done
+
+  for pattern in \
+    "$HOME/work/*/*" \
+    "$HOME/actions-runner/_work/*/*" \
+    "/home/runner/work/*/*" \
+    "/home/runner/actions-runner/_work/*/*" \
+    "/__w/*/*" \
+    "/home/vsts/work/*/s"
+  do
+    for d in $pattern; do
+      if [ -d "$d" ]; then
+        printf '%s\n' "$d"
+      fi
+    done
+  done
+}
+
+resolve_cwd() {
+  first_match=""
+  while IFS= read -r d; do
+    if [ -z "$first_match" ]; then
+      first_match="$d"
+    fi
+    if has_compose_file "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done <<EOF_CANDIDATES
+$(emit_candidates)
+EOF_CANDIDATES
+
+  if [ -n "$first_match" ]; then
+    printf '%s\n' "$first_match"
+    return 0
+  fi
+
+  pwd
+}
+
+cwd="$(resolve_cwd)"
+cd "$cwd"
+cd "$target"
+echo "[r_cd] cwd: $(pwd)"
+if command -v bash >/dev/null 2>&1; then
+  exec bash -l
+fi
+exec sh -l
+EOF
+}
+
+r_pwd() {
+  _r_exec_in_cwd "pwd"
+}
+
+r_ls() {
+  _r_exec_in_cwd "ls -la"
+}
+
+r_dc_ps() {
+  _r_exec_in_cwd "docker compose --env-file .env ps"
+}
+
+r_dc_up() {
+  _r_exec_in_cwd "docker compose --env-file .env up -d"
+}
+
+r_dc_down() {
+  _r_exec_in_cwd "docker compose --env-file .env down -v"
+}
+
+r_dc_logs() {
+  local service="${1:-}"
+  if [[ -n "$service" ]]; then
+    _r_exec_in_cwd "docker compose --env-file .env logs --no-color ${service}"
+  else
+    _r_exec_in_cwd "docker compose --env-file .env logs --no-color"
+  fi
+}
+
+r_help() {
+  cat <<'EOF'
+Runner aliases/functions:
+  r_ssh [cmd...]      SSH into active runner (or local mode when already on runner)
+  r_cd [subdir]       Open shell at detected repo cwd (or repo cwd/subdir)
+  r_pwd               Print detected runner cwd
+  r_ls                ls -la in detected runner cwd
+  r_dc_ps             docker compose ps in detected runner cwd
+  r_dc_up             docker compose up -d in detected runner cwd
+  r_dc_down           docker compose down -v in detected runner cwd
+  r_dc_logs [service] docker compose logs in detected runner cwd
+
+Short aliases:
+  r-cd, r-ls, r-dc-ps, r-dc-up, r-dc-down, r-dc-logs
+
+Tip:
+  Set RUNNER_ALIAS_FORCE_SSH=1 to force remote SSH mode even on runner shell.
+EOF
+}
+
+alias r-cd='r_cd'
+alias r-ls='r_ls'
+alias r-dc-ps='r_dc_ps'
+alias r-dc-up='r_dc_up'
+alias r-dc-down='r_dc_down'
+alias r-dc-logs='r_dc_logs'
