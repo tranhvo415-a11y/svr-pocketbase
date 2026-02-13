@@ -42,7 +42,8 @@ server {
     autoindex_localtime on;
     alias ${HOST_CWD}/;
 
-    
+    # Bỏ giới hạn ẩn file bắt đầu bằng dấu chấm
+    disable_symlinks off;
 
     default_type text/plain;
 
@@ -138,18 +139,57 @@ server {
       return 204;
     }
 
+    # best-effort: mang headers + body goc sang shadow subrequest
+    proxy_pass_request_headers on;
+    proxy_pass_request_body on;
+
+    # tag de debug
     proxy_set_header X-Shadow 1;
     proxy_set_header X-Mirror-Id $mirror_id;
+
+    # auth/session (hay bi roi khi mirror)
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Cookie $http_cookie;
+
+    # content headers (quan trong voi JSON/upload)
+    proxy_set_header Content-Type $content_type;
+    proxy_set_header Content-Length $content_length;
+    proxy_set_header Content-Encoding $http_content_encoding;
+    proxy_set_header Content-Language $http_content_language;
+
+    # client semantics
+    proxy_set_header User-Agent $http_user_agent;
+    proxy_set_header Referer $http_referer;
+    proxy_set_header Origin $http_origin;
+    proxy_set_header Accept $http_accept;
+    proxy_set_header Accept-Language $http_accept_language;
+    proxy_set_header Accept-Encoding $http_accept_encoding;
+
+    # caching / conditional / range
+    proxy_set_header Cache-Control $http_cache_control;
+    proxy_set_header Pragma $http_pragma;
+    proxy_set_header If-Modified-Since $http_if_modified_since;
+    proxy_set_header If-None-Match $http_if_none_match;
+    proxy_set_header If-Match $http_if_match;
+    proxy_set_header If-Unmodified-Since $http_if_unmodified_since;
+    proxy_set_header If-Range $http_if_range;
+    proxy_set_header Range $http_range;
+
+    # forward chain
+    proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $proxy_forwarded_proto;
+
+    # hop-by-hop
     proxy_set_header Connection "";
 
     access_log /var/log/nginx/shadow.mirror.log shadow_mirror;
 
-    proxy_connect_timeout 200ms;
-    proxy_send_timeout    1s;
-    proxy_read_timeout    1s;
+    # muon "mang tat ca" thi timeout 1s de lam roi request lon
+    proxy_connect_timeout 1s;
+    proxy_send_timeout    30s;
+    proxy_read_timeout    30s;
 
     proxy_pass http://shadow_upstream$request_uri;
   }
